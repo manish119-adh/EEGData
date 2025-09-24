@@ -1,0 +1,9 @@
+{
+    "python.defaultInterpreterPath": "${env:HOME}/venv/bin/python3",
+    "python.analysis.extraPaths": [
+        "${env:HOME}/eegnet-try/arl-eegmodels"
+    ],
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.autoImportCompletions": true,
+    "python.terminal.activateEnvironment": true
+}
