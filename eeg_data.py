@@ -4,12 +4,18 @@
 from collections import namedtuple
 from math import ceil, floor
 import os
-from tkinter import S
+
 from types import NoneType
 import numpy as np
 from pyedflib import EdfReader
 from globals import EEGEvent
 from scipy import signal
+from importlib import import_module
+import pandas as pd
+
+
+
+
 
 
 class EEGData:
@@ -21,62 +27,114 @@ class EEGData:
         self._files = files
         self._annotations = annotations
 
-        
+    
+
+
+    
 
     @staticmethod
-    def load_from_EEG(directory:str):
+    def load_from_EDF_files(files:str):
+        signalslist = []
+        edffiles = []
+        channels = []
+        fs = 0
+        for fil in files:
+            
+            try:
+                edf = EdfReader(fil)
+                
+                print(f"Loaded {fil}")
+            except Exception as ex:
+                print(f"cannot read file {fil}")
+                continue
+            
+            annotations=None
+            if edf.filetype == 1:
+                # It is edf+ get annotations
+                annotations = edf.readAnnotations()
+                pass
+
+            # Metadata
+            if not len(channels):
+                channels = edf.getSignalLabels()
+                fs_list = edf.getSampleFrequencies()
+                fs = fs_list[0]
+            n_channels = len(channels)
+
+            channels_ = edf.getSignalLabels()
+            if len(channels_) != n_channels:
+                continue # ignore data if not all channels are found
+            
+            # For simplicity, assume all channels have same fs
+            fs = fs_list[0]
+            # Read signals
+            signals = []
+            for ch in range(n_channels):
+                sig = edf.readSignal(ch, start=0, n=None, digital=False)
+                signals.append(sig)
+            signalslist.append(signals)
+            edffiles.append(fil)
+            edf.close()
+        return EEGData(signalslist, fs, channels=channels, annotations=annotations, files=edffiles)
+        
+
+        
+
+
+    @staticmethod
+    def load_from_EDF_dir(directory:str):
         '''
             Load data from USENIX InexpensiveBCI Dataset given the directory
         '''
         # Load data from multiple EDF files along with the associated labels
-        signalslist = []
-        edffiles = []
-        for fil in os.listdir(directory):
-            
-            if fil[-4:] == ".edf":
-                try:
-                    edf = EdfReader(os.path.join(directory, fil))
-                    
-                    print(f"Loaded {os.path.join(directory, fil)}")
-                except Exception as ex:
-                    print(f"cannot read file {os.path.join(directory, fil)}")
-                    continue
-                annotations=None
-                if edf.filetype == 1:
-                    # It is edf+ get annotations
-                    annotations = edf.readAnnotations()
-                    pass
-
-                # Metadata
-                channels = edf.getSignalLabels()
-                fs_list = edf.getSampleFrequencies()
-                n_channels = edf.signals_in_file
-                
-                # For simplicity, assume all channels have same fs
-                fs = fs_list[0]
-                # Read signals
-                signals = []
-                for ch in range(n_channels):
-                    sig = edf.readSignal(ch, start=0, n=None, digital=False)
-                    signals.append(sig)
-                signalslist.append(signals)
-                edf.close()
-        return EEGData(signalslist, fs, channels=channels, annotations=annotations)
+        return EEGData.load_from_EDF_files([os.path.join(directory, fil) for fil in os.listdir(directory) if fil[-4:] == ".edf"])
         
 
     @staticmethod
-    def load_from_csv(filenames, labels, sep=","):
+    def load_from_CSV_files(filenames, frequency, channels, sep="\t"):
         '''
         load data from csv
         '''
-        return 
+        _data = []
+        _frequency = frequency
+        _channels = channels
+        _files = []
+        for filname in filenames:
+            data = pd.read_csv(filname,sep=sep)
+            data = data[channels]
+            # assert all channels are present
+            assert len(data.columns) == len(channels)
+            _data.append([data[chan] for chan in channels])
+            _files.append(filname)
+        return EEGData(_data, _frequency, files=_files, channels=_channels, annotations=None)
 
 
-    def select_channels(self, channels:list[str]):
-        '''
-        filter data by channels
-        '''
-        return
+    def concatenate(self, another):
+        assert self._frequency == another._frequency
+        assert self._channels == another._channel
+
+        self._data.extend(another._data)
+        self._files.extend(another.files)
+
+
+
+    def create_sliding_task(self, tasks, subjects, stride=0.5, window=1.5):
+        X = []
+        y = []
+        stride=int(stride * self._frequency)
+        window=int(window * self._frequency)
+        for (i, data, subject, task) in zip(range(len(self._data)), self._data, subjects, tasks):
+            min_len = min([len(data[chan]) for chan in range(len(data))])
+            start = 0
+            while start + window <= min_len:
+                X.append([data[chan][start:start+window] for chan in range(len(data))])
+                y.append((subject, task))
+                start += stride
+
+        return np.array(X), y
+
+
+    
 
 
 
@@ -150,15 +208,26 @@ class EEGData:
         original signal if we later change them
 
         '''
-        return EEGData([[sig.copy() for sig in dd] for dd in self._data], channels=list(self._channels) if self._channels is not None else None, frequency=self._frequency, files = list(self._files) if self._files is not None else None )
+        return EEGData([[sig.copy() for sig in dd] for dd in self._data], 
+        channels=list(self._channels) if self._channels is not None else None, 
+        frequency=self._frequency, 
+        files = list(self._files) if self._files is not None else None )
 
     def select_channels(self, channels):
-        deleted_channels = set(self._channels).difference(set(channels))
-        for channel in deleted_channels:
-            idx = self._channels.index(channel)
-            self._channels.pop(idx)
-            for d in self._data:
-                d.pop(idx)
+        """
+        Select channels removing all others where channels is any iterable
+        The order of channels in original data is preserved
+        """
+        channels = set(channels)
+        originallen = len(self._channels)
+        retain_index = set([i for i in range(originallen) if self._channels[i] in channels])
+        self._channels = [self._channels[i] for i in range(len(self._channels)) if i in retain_index]
+        for j in range(len(self._data)):
+            self._data[j] = [self._data[j][i] for i in range(originallen) if i in retain_index]
+        
+        
+
+    
         
             
 
@@ -167,7 +236,7 @@ class EEGData:
 
     
 
-    def epoch_data(self, subjects : list[str|int], event_lists :list[list[EEGEvent]], low:float=-0.5, hi:float=1.0):
+    def epoch_data(self, subjects : list[str|int], event_lists :list[list[EEGEvent]], low:float=-0.5, hi:float=1.0) -> np.array:
         '''
         epoch each eeg data per event in the stream between low (default -1) and hi (default 2)
         seconds after the event onset, note that negative means use time before the event.
@@ -181,27 +250,25 @@ class EEGData:
         # make size for
         y = []
         X = []
-        max_all = int((low - hi)*self._frequency)+1
-        data_index = 0
-        for (subject, event_list) in zip(subjects, event_lists):
+        if low >= hi:
+            return None
+        max_all = int((hi - low)*self._frequency)+1
+        
+        for (i, subject, event_list) in zip(range(len(subjects)), subjects, event_lists):
             
             for event in event_list:
                 low_time = event.timestamp + low
-                high_time = event.timestamp + high_time
                 low_sample = ceil(low_time * self._frequency)
-                if low_sample < 0 or len(self._data[data_index][0]) < low_sample+max_all):
+                if low_sample < 0 or (len(self._data[i][0]) < low_sample + max_all):
                     continue
-                X.append(self._data[data_index][:][low_sample:low_sample + max_all])
+                X.append([chansample[low_sample:low_sample + max_all] for chansample in self._data[i]])
                 y.append((subject, event.event_label))
 
 
         return np.array(X), y
 
-if __name__ == "__main__":
-    edfdata = EEGData.load_from_EDF("data/USENIX_Inexpensive")
+
     
-    edfdata_original = edfdata.copy()
-    pass
 
 
 
