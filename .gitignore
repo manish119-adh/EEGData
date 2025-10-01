@@ -2,4 +2,5 @@ data/
 __pycache__
 .vscode
 model/
+*_results.csv
 

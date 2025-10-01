@@ -8,6 +8,7 @@ import os
 from types import NoneType
 import numpy as np
 from pyedflib import EdfReader
+from sklearn.model_selection import train_test_split
 from globals import EEGEvent
 from scipy import signal
 from importlib import import_module
@@ -118,20 +119,28 @@ class EEGData:
 
 
 
-    def create_sliding_task(self, tasks, subjects, stride=0.5, window=1.5):
+    def create_sliding_task(self, tasks, subjects, test_train_val_split = None, stride=0.5, window=1.5):
         X = []
         y = []
+        test_train = []
         stride=int(stride * self._frequency)
         window=int(window * self._frequency)
-        for (i, data, subject, task) in zip(range(len(self._data)), self._data, subjects, tasks):
+        if test_train_val_split is None:
+            test_train_val_split_list = [None]*len(tasks)
+        else:
+            test_train_val_split_list = test_train_val_split
+        
+        
+        for (i, data, subject, task, test_train_) in zip(range(len(self._data)), self._data, subjects, tasks, test_train_val_split_list):
             min_len = min([len(data[chan]) for chan in range(len(data))])
             start = 0
             while start + window <= min_len:
                 X.append([data[chan][start:start+window] for chan in range(len(data))])
                 y.append((subject, task))
+                if test_train_val_split is not None:
+                    test_train.append(test_train_)
                 start += stride
-
-        return np.array(X), y
+        return np.array(X), y, (None if test_train_val_split is None else np.array(test_train))
 
 
     
